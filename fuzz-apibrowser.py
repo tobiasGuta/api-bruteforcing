@@ -55,7 +55,8 @@ def matches_filter(value, exact_set, ranges):
 async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
                          headless=True, use_burp=False,
                          filter_status=None, filter_size=None,
-                         exclude_status=None, exclude_size=None):
+                         exclude_status=None, exclude_size=None,
+                         token=None):  # added token param
 
     with open(wordlist_path, 'r') as f:
         endpoints = [line.strip() for line in f if line.strip()]
@@ -101,6 +102,13 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
 
         browser = await p.chromium.launch(headless=headless, args=browser_args)
         context = await browser.new_context(**context_args)
+
+        if token:
+            # Set Authorization header with Bearer token
+            await context.set_extra_http_headers({
+                "Authorization": f"Bearer {token}"
+            })
+
         page = await context.new_page()
 
         for word in endpoints:
@@ -156,6 +164,7 @@ def main():
     parser.add_argument('--filter-size', help='Include only these sizes/ranges (e.g. 1000,500-1500)')
     parser.add_argument('--exclude-status', help='Exclude these status codes/ranges (e.g. 403,404,400-499)')
     parser.add_argument('--exclude-size', help='Exclude these sizes/ranges (e.g. 13966,500-1000)')
+    parser.add_argument('--token', help='Bearer token to send in Authorization header')  # New arg
 
     args = parser.parse_args()
     asyncio.run(fuzz_endpoints(
@@ -167,7 +176,8 @@ def main():
         filter_status=args.filter_status,
         filter_size=args.filter_size,
         exclude_status=args.exclude_status,
-        exclude_size=args.exclude_size
+        exclude_size=args.exclude_size,
+        token=args.token  # Pass token here
     ))
 
 if __name__ == "__main__":
