@@ -56,11 +56,12 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
                          headless=True, use_burp=False,
                          filter_status=None, filter_size=None,
                          exclude_status=None, exclude_size=None,
-                         token=None):  # added token param
+                         token=None):
 
     with open(wordlist_path, 'r') as f:
         endpoints = [line.strip() for line in f if line.strip()]
 
+    total = len(endpoints)  # total count for progress tracking
     fuzz_mode = "FUZZ" in base_url
     delay = 1.0 / rps
 
@@ -111,7 +112,7 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
 
         page = await context.new_page()
 
-        for word in endpoints:
+        for i, word in enumerate(endpoints, 1):  # start counting at 1
             url = base_url.replace("FUZZ", word) if fuzz_mode else f"{base_url.rstrip('/')}/{word.lstrip('/')}"
 
             start_time = time.time()
@@ -125,15 +126,17 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
                 lines = content.count("\n")
                 size = len(content.encode('utf-8'))
 
-                # Independent include filters
+                # Always print progress on the same bottom line
+                progress_text = f"Progress: {i}/{total}"
+                print(f"\r{progress_text:<60}", end="", flush=True)
+
+                # Filtering logic
                 if filter_status and not matches_filter(status, status_set, status_ranges):
                     await asyncio.sleep(delay)
                     continue
                 if filter_size and not matches_filter(size, size_set, size_ranges):
                     await asyncio.sleep(delay)
                     continue
-
-                # Independent exclude filters
                 if exclude_status and matches_filter(status, ex_status_set, ex_status_ranges):
                     await asyncio.sleep(delay)
                     continue
@@ -142,12 +145,16 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
                     continue
 
                 colored_status = colorize_status(status)
-                print(f"{word:<20} [Status: {colored_status}, Size: {size}, Words: {words}, Lines: {lines}, Duration: {duration}ms]")
+                # Print filtered result on a new line, above progress line
+                print(f"\n{i}/{total} {word:<20} [Status: {colored_status}, Size: {size}, Words: {words}, Lines: {lines}, Duration: {duration}ms]")
 
             except Exception as e:
-                print(f"{Colors.RED}{word:<20} [Error: {e}]{Colors.RESET}")
+                print(f"\n{Colors.RED}{word:<20} [Error: {e}]{Colors.RESET}")
 
             await asyncio.sleep(delay)
+
+        # After finishing, move cursor to next line so prompt isn't stuck on progress line
+        print()
 
         await page.close()
         await browser.close()
@@ -164,7 +171,7 @@ def main():
     parser.add_argument('--filter-size', help='Include only these sizes/ranges (e.g. 1000,500-1500)')
     parser.add_argument('--exclude-status', help='Exclude these status codes/ranges (e.g. 403,404,400-499)')
     parser.add_argument('--exclude-size', help='Exclude these sizes/ranges (e.g. 13966,500-1000)')
-    parser.add_argument('--token', help='Bearer token to send in Authorization header')  # New arg
+    parser.add_argument('--token', help='Bearer token to send in Authorization header')
 
     args = parser.parse_args()
     asyncio.run(fuzz_endpoints(
@@ -177,7 +184,7 @@ def main():
         filter_size=args.filter_size,
         exclude_status=args.exclude_status,
         exclude_size=args.exclude_size,
-        token=args.token  # Pass token here
+        token=args.token
     ))
 
 if __name__ == "__main__":
