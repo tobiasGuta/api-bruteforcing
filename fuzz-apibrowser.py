@@ -1,10 +1,12 @@
 import asyncio
 import argparse
 import time
+import re
 from collections import deque
 from datetime import timedelta
 from playwright.async_api import async_playwright
-import aiohttp  # <-- added for Discord webhook
+import aiohttp 
+from urllib.parse import urlparse
 
 class Colors:
     RESET = "\033[0m"
@@ -66,6 +68,39 @@ async def send_discord_notification(webhook_url, target, endpoint, size, recursi
         except Exception as e:
             print(f"{Colors.YELLOW}[!] Warning: Failed to send Discord notification: {e}{Colors.RESET}")
 
+# ---------------- Passive mode helper ---------------- #
+async def passive_extract_and_save(page, wordlist_file, seen_words):
+    """Extract visible text, href/src links, and script content; save new unique words to file."""
+    try:
+        content = await page.content()
+
+        # Extract text from body
+        body_text = await page.inner_text("body", timeout=2000)
+        candidates = set(re.findall(r"[A-Za-z0-9_\-/\.]+", body_text))
+
+        # Extract from href and src
+        attrs = await page.eval_on_selector_all("*[href], *[src]", "(els) => els.map(el => el.getAttribute('href') || el.getAttribute('src'))")
+        for attr in attrs:
+            if attr:
+                candidates.update(re.findall(r"[A-Za-z0-9_\-/\.]+", attr))
+
+        # Extract from script tags
+        scripts = await page.eval_on_selector_all("script", "(els) => els.map(el => el.innerText)")
+        for script in scripts:
+            candidates.update(re.findall(r"[A-Za-z0-9_\-/\.]+", script))
+
+        # Save only new words
+        new_words = sorted({w for w in candidates if w not in seen_words})
+        if new_words:
+            with open(wordlist_file, "a") as f:
+                for word in new_words:
+                    f.write(word + "\n")
+                    seen_words.add(word)
+            print(f"{Colors.MAGENTA}[Passive] Added {len(new_words)} new entries to {wordlist_file}{Colors.RESET}")
+
+    except Exception as e:
+        print(f"{Colors.YELLOW}[Passive] Extraction error: {e}{Colors.RESET}")
+
 async def fuzz_with_queue(base_url, endpoints, page, delay, timeout,
                           filter_status, filter_size,
                           exclude_status, exclude_size,
@@ -74,12 +109,15 @@ async def fuzz_with_queue(base_url, endpoints, page, delay, timeout,
                           ex_status_set, ex_status_ranges,
                           ex_size_set, ex_size_ranges,
                           max_depth, recursive,
-                          discord_webhook=None):
+                          discord_webhook=None,
+                          passive=False,
+                          passive_file="passive_wordlist.txt"):
 
     queue = deque()
     start_url = base_url.rstrip('/')
     queue.append((start_url, 1))
     discovered_dirs = set([start_url])
+    seen_words = set()
 
     total_requests = 0
     total_errors = 0
@@ -87,7 +125,6 @@ async def fuzz_with_queue(base_url, endpoints, page, delay, timeout,
 
     while queue:
         current_url, current_depth = queue.popleft()
-        total = len(endpoints)
 
         print(f"\n{Colors.BOLD}{Colors.CYAN}Starting fuzz at depth {current_depth}: {current_url}{Colors.RESET}")
 
@@ -108,6 +145,10 @@ async def fuzz_with_queue(base_url, endpoints, page, delay, timeout,
                 size = len(content.encode('utf-8'))
 
                 total_requests += 1
+
+                # Passive mode extraction
+                if passive:
+                    await passive_extract_and_save(page, passive_file, seen_words)
 
                 # Check filters
                 if filter_status and not matches_filter(status, status_set, status_ranges):
@@ -158,7 +199,9 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
                          filter_status=None, filter_size=None,
                          exclude_status=None, exclude_size=None,
                          token=None, recursive=False, max_depth=1,
-                         discord_webhook=None):
+                         discord_webhook=None,
+                         passive=False,
+                         passive_file="passive_wordlist.txt"):
 
     with open(wordlist_path, 'r') as f:
         endpoints = [line.strip() for line in f if line.strip()]
@@ -186,6 +229,8 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
  :: Exclude Size     : {exclude_size or 'None'}
  :: Recursive        : {recursive}
  :: Max Depth        : {max_depth}
+ :: Passive Mode     : {passive}
+ :: Passive File     : {passive_file if passive else 'N/A'}
 {Colors.RESET}""")
 
     async with async_playwright() as p:
@@ -215,14 +260,16 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
                              ex_status_set, ex_status_ranges,
                              ex_size_set, ex_size_ranges,
                              max_depth, recursive,
-                             discord_webhook=discord_webhook)
+                             discord_webhook=discord_webhook,
+                             passive=passive,
+                             passive_file=passive_file)
 
         print()
         await page.close()
         await browser.close()
 
 def main():
-    parser = argparse.ArgumentParser(description="Browser-based FUZZ fuzzer with include/exclude filters + recursion")
+    parser = argparse.ArgumentParser(description="Browser-based FUZZ fuzzer with include/exclude filters + recursion + passive mode")
     parser.add_argument('--url', required=True, help='Target URL. Use FUZZ to indicate injection point')
     parser.add_argument('--wordlist', required=True, help='Path to wordlist file')
     parser.add_argument('--rps', type=float, default=10, help='Requests per second')
@@ -236,7 +283,9 @@ def main():
     parser.add_argument('--token', help='Bearer token to send in Authorization header')
     parser.add_argument('--recursive', action='store_true', help='Enable recursive fuzzing')
     parser.add_argument('--max-depth', type=int, default=1, help='Maximum recursion depth')
-    parser.add_argument('--discord-webhook', help='Discord webhook URL for notifications')  # <-- added arg
+    parser.add_argument('--discord-webhook', help='Discord webhook URL for notifications')
+    parser.add_argument('--passive', action='store_true', help='Enable passive watch-and-record mode')
+    parser.add_argument('--passive-file', default='passive_wordlist.txt', help='Path to save passive wordlist')
 
     args = parser.parse_args()
     asyncio.run(fuzz_endpoints(
@@ -252,7 +301,9 @@ def main():
         token=args.token,
         recursive=args.recursive,
         max_depth=args.max_depth,
-        discord_webhook=args.discord_webhook  # <-- pass arg
+        discord_webhook=args.discord_webhook,
+        passive=args.passive,
+        passive_file=args.passive_file
     ))
 
 if __name__ == "__main__":
