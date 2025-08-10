@@ -111,7 +111,9 @@ async def fuzz_with_queue(base_url, endpoints, page, delay, timeout,
                           max_depth, recursive,
                           discord_webhook=None,
                           passive=False,
-                          passive_file="passive_wordlist.txt"):
+                          passive_file="passive_wordlist.txt",
+                          match_respond=None  # === New param
+                          ):
 
     queue = deque()
     start_url = base_url.rstrip('/')
@@ -123,15 +125,19 @@ async def fuzz_with_queue(base_url, endpoints, page, delay, timeout,
     total_errors = 0
     start_time = time.time()
 
+    # === Prepare match keywords list if provided
+    if match_respond:
+        match_keywords = [kw.strip() for kw in match_respond.split(',') if kw.strip()]
+    else:
+        match_keywords = []
+
     while queue:
         current_url, current_depth = queue.popleft()
 
         print(f"\n{Colors.BOLD}{Colors.CYAN}Starting fuzz at depth {current_depth}: {current_url}{Colors.RESET}")
 
         for word in endpoints:
-            url = f"{current_url}/{word.lstrip('/')}"
-            if not url.endswith('/'):
-                url += '/'
+            url = current_url.replace("FUZZ", word)
 
             try:
                 await asyncio.sleep(delay)
@@ -150,6 +156,18 @@ async def fuzz_with_queue(base_url, endpoints, page, delay, timeout,
                 if passive:
                     await passive_extract_and_save(page, passive_file, seen_words)
 
+                # === Check for match_respond keywords ONLY if specified
+                if match_keywords and any(keyword in content for keyword in match_keywords):
+                    print(f"{Colors.RED}[MATCH FOUND] Keyword(s) matched on {url}{Colors.RESET}")
+                    if discord_webhook:
+                        await send_discord_notification(
+                            discord_webhook,
+                            current_url,
+                            word,
+                            size,
+                            recursive_active=(recursive and current_depth < max_depth)
+                        )
+
                 # Check filters
                 if filter_status and not matches_filter(status, status_set, status_ranges):
                     pass
@@ -163,8 +181,8 @@ async def fuzz_with_queue(base_url, endpoints, page, delay, timeout,
                     colored_status = colorize_status(status)
                     print(f"{word:<24} [Status: {colored_status}, Size: {size}, Words: {words}, Lines: {lines}, Duration: {duration}ms]")
 
-                    # Discord notify only on matched results
-                    if discord_webhook:
+                    # Discord notify only on matched results if no match_respond specified
+                    if discord_webhook and not match_keywords:
                         await send_discord_notification(
                             discord_webhook,
                             current_url,
@@ -201,7 +219,9 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
                          token=None, recursive=False, max_depth=1,
                          discord_webhook=None,
                          passive=False,
-                         passive_file="passive_wordlist.txt"):
+                         passive_file="passive_wordlist.txt",
+                         match_respond=None  # === New param
+                         ):
 
     with open(wordlist_path, 'r') as f:
         endpoints = [line.strip() for line in f if line.strip()]
@@ -251,7 +271,7 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
 
         page = await context.new_page()
 
-        start_url = base_url if not fuzz_mode else base_url.replace("FUZZ", "")
+        start_url = base_url
         await fuzz_with_queue(start_url, endpoints, page, delay, timeout,
                              filter_status, filter_size,
                              exclude_status, exclude_size,
@@ -262,7 +282,8 @@ async def fuzz_endpoints(base_url, wordlist_path, rps, timeout,
                              max_depth, recursive,
                              discord_webhook=discord_webhook,
                              passive=passive,
-                             passive_file=passive_file)
+                             passive_file=passive_file,
+                             match_respond=match_respond)  # === Pass param
 
         print()
         await page.close()
@@ -287,6 +308,9 @@ def main():
     parser.add_argument('--passive', action='store_true', help='Enable passive watch-and-record mode')
     parser.add_argument('--passive-file', default='passive_wordlist.txt', help='Path to save passive wordlist')
 
+    # === Added new argument for matching responses
+    parser.add_argument('--match-respond', help='Comma-separated list of strings to search for in responses')
+
     args = parser.parse_args()
     asyncio.run(fuzz_endpoints(
         args.url, args.wordlist,
@@ -303,7 +327,8 @@ def main():
         max_depth=args.max_depth,
         discord_webhook=args.discord_webhook,
         passive=args.passive,
-        passive_file=args.passive_file
+        passive_file=args.passive_file,
+        match_respond=args.match_respond  # === Pass here
     ))
 
 if __name__ == "__main__":
