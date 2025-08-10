@@ -307,8 +307,6 @@ def main():
     parser.add_argument('--discord-webhook', help='Discord webhook URL for notifications')
     parser.add_argument('--passive', action='store_true', help='Enable passive watch-and-record mode')
     parser.add_argument('--passive-file', default='passive_wordlist.txt', help='Path to save passive wordlist')
-
-    # === Added new argument for matching responses
     parser.add_argument('--match-respond', help='Comma-separated list of strings to search for in responses')
 
     args = parser.parse_args()
